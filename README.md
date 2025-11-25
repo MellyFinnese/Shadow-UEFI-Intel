@@ -3,21 +3,32 @@
 UEFI / firmware inspection toolkit that parses images, baselines modules, and uses an AI layer to flag suspicious changes for human review. Defensive intel only.
 
 ## Overview
-Shadow-UEFI-Intel streamlines firmware hygiene by combining deterministic parsing with an AI triage layer. The toolkit ingests UEFI images, builds reproducible baselines of modules and configuration, and highlights drift so analysts can focus on high-impact anomalies rather than manual diffing.
+Shadow-UEFI-Intel streamlines firmware hygiene by combining deterministic parsing with a layered triage stack. The toolkit ingests UEFI images, builds reproducible baselines of modules and configuration, and highlights drift so analysts can focus on high-impact anomalies rather than manual diffing.
 
 ## Core capabilities
 - **UEFI image parsing:** Extract and normalize firmware volumes, file systems, and drivers for repeatable analysis.
 - **Baseline generation:** Snapshot module hashes, metadata, and configuration knobs to form a trusted reference set.
-- **AI-assisted triage:** Prioritize changes by risk using a scoring model tuned for defensive use cases.
-- **Explainable diffs:** Produce human-readable reports that trace why a module was flagged.
+- **Heuristic triage:** Quickly label obvious anomalies (e.g., unsigned modules, unexpected volume insertions) with deterministic checks.
+- **Rule-based suspicion scoring:** Apply policy-driven weighting to changed modules and configurations so analysts get a sortable risk list.
+- **Explainable anomaly scoring:** Produce human-readable reasons and evidence links for every score to keep review transparent.
 - **Audit-friendly workflows:** Preserve evidence artifacts and timestamps to support review or escalation.
 
 ## Analysis workflow
 1. **Ingest**: Point the toolkit at a firmware image or physical dump and collect normalized artifacts.
 2. **Baseline**: Create or load a known-good profile for the platform or firmware version under review.
 3. **Compare**: Run the diff engine to surface module additions, removals, or mutations against the baseline.
-4. **Triage**: Let the AI layer prioritize suspicious changes and provide rationale for each finding.
+4. **Triage**: Run the heuristic or rule-based scoring to prioritize suspicious changes, keeping AI optional.
 5. **Report**: Export results for peer review or case tracking with links back to supporting evidence.
+
+## AI layer (optional)
+- **Purpose:** Take structured diff features and return ranked findings with analyst-friendly explanations.
+- **Toggle:** `--triage-mode heuristic|llm|off` keeps local heuristics as the default while allowing an LLM pass when configured.
+- **Flow:**
+  1. Generate a compact JSON summary of module, configuration, and policy deltas.
+  2. Submit the summary to a local model or external API.
+  3. Return the **Top 5 suspicious changes**, **why they matter**, and **what to verify next** in natural language.
+- **Isolation-friendly:** The LLM step is optional; air-gapped deployments can disable it without losing deterministic scoring.
+- **In-tool implementation:** The CLI `compare` command now accepts `--triage-mode` to emit heuristic scores or LLM-style analyst notes alongside the deterministic diff.
 
 ## Operating principles
 - **Defensive intelligence only:** All capabilities are scoped for detection, validation, and hardening workflows.
@@ -32,7 +43,6 @@ Shadow-UEFI-Intel streamlines firmware hygiene by combining deterministic parsin
 
 ## Contributing
 Issues and PRs focused on defensive detection, validation, or documentation improvements are welcome. Please accompany changes with rationale and, when possible, reproducible test cases.
-UEFI / firmware inspection toolkit that parses images, baselines modules, and uses an AI-like change detector to flag suspicious differences for human review.
 
 ## Features
 
@@ -54,11 +64,21 @@ cargo run -- inspect /path/to/firmware.bin --format json
 # Create a baseline JSON file
 cargo run -- baseline /path/to/firmware.bin --output baselines/known-good.json --label "Version 1.2.3"
 
-# Compare a new image against the baseline
+# Compare a new image against the baseline with heuristic triage (default)
 cargo run -- compare /path/to/new.bin --baseline baselines/known-good.json
+
+# Compare and request LLM-style analyst notes
+cargo run -- compare /path/to/new.bin --baseline baselines/known-good.json --triage-mode llm
 ```
 
 The compare command prints a simple suspicion score alongside a breakdown of new, missing, and changed modules. Use the JSON output for pipeline integration.
+
+## Example outputs
+- **Heuristic output:** `PCIe driver modified` → score **72/100** because the hash drifted, the vendor signature is missing, and the driver now requests DMA privileges.
+- **LLM output (Analyst notes):**
+  - **Top 5 suspicious changes:** highlights the modified PCIe driver, a new DXE volume, and altered Secure Boot keys.
+  - **Why they matter:** flags unsigned DMA-capable code paths and policy changes that weaken measured boot coverage.
+  - **What to verify next:** recommend re-baselining Secure Boot variables, validating the new DXE module provenance, and inspecting DMA guardrails.
 
 ## Development
 
