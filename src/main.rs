@@ -2,7 +2,10 @@ use std::{fs, path::PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::Serialize;
 use shadow_uefi_intel::{
+    DiffReport, FirmwareScan, TriageMode, TriageOutcome, build_baseline, compare_against_baseline,
+    load_baseline, run_triage, save_baseline, scan_firmware,
     DiffReport, FirmwareScan, SandboxConfig, SandboxEventKind, SandboxReport, build_baseline,
     compare_against_baseline, load_baseline, sandbox_firmware_modules, save_baseline,
     scan_firmware,
@@ -46,6 +49,9 @@ enum Commands {
         /// Emit JSON instead of human-readable text
         #[arg(short, long, default_value = "text")]
         format: OutputFormat,
+        /// Select triage mode: heuristics, LLM-style notes, or disable
+        #[arg(long, default_value = "heuristic")]
+        triage_mode: TriageModeArg,
     },
     /// Execute detected PE modules in an emulator sandbox to catch behavioral anomalies
     Sandbox {
@@ -61,6 +67,13 @@ enum Commands {
 enum OutputFormat {
     Text,
     Json,
+}
+
+#[derive(Copy, Clone, ValueEnum, Debug)]
+enum TriageModeArg {
+    Heuristic,
+    Llm,
+    Off,
 }
 
 fn main() -> Result<()> {
@@ -89,11 +102,13 @@ fn main() -> Result<()> {
             firmware,
             baseline,
             format,
+            triage_mode,
         } => {
             let scan = scan_firmware(&firmware)?;
             let baseline = load_baseline(&baseline)?;
             let report = compare_against_baseline(&baseline, &scan);
-            emit_report(&report, format);
+            let triage = run_triage(&report, map_triage_mode(triage_mode));
+            emit_report(&report, &triage, format);
         }
         Commands::Sandbox {
             firmware,
@@ -143,10 +158,17 @@ fn emit_scan(scan: &FirmwareScan, format: OutputFormat) {
     }
 }
 
-fn emit_report(report: &DiffReport, format: OutputFormat) {
+fn emit_report(report: &DiffReport, triage: &TriageOutcome, format: OutputFormat) {
     match format {
         OutputFormat::Json => {
-            let json = serde_json::to_string_pretty(report).expect("serializable report");
+            #[derive(Serialize)]
+            struct ReportWithTriage<'a> {
+                report: &'a DiffReport,
+                triage: &'a TriageOutcome,
+            }
+
+            let json = serde_json::to_string_pretty(&ReportWithTriage { report, triage })
+                .expect("serializable report");
             println!("{}", json);
         }
         OutputFormat::Text => {
@@ -203,10 +225,39 @@ fn emit_report(report: &DiffReport, format: OutputFormat) {
                     );
                 }
             }
+
+            println!("\nTriage mode: {:?}", triage.mode);
+            if !triage.findings.is_empty() {
+                println!("Heuristic findings ({}):", triage.findings.len());
+                for finding in &triage.findings {
+                    println!("- {} (score {})", finding.summary, finding.score);
+                    if !finding.reasons.is_empty() {
+                        println!("  reasons: {}", finding.reasons.join(", "));
+                    }
+                    if !finding.next_steps.is_empty() {
+                        println!("  next: {}", finding.next_steps.join(", "));
+                    }
+                }
+            }
+
+            if let Some(notes) = &triage.analyst_notes {
+                println!("\nAnalyst notes (LLM-style):");
+                println!("  Top changes: {}", notes.top_suspicious_changes.join("; "));
+                println!("  Why they matter: {}", notes.why_they_matter.join("; "));
+                println!(
+                    "  What to verify next: {}",
+                    notes.what_to_verify_next.join("; ")
+                );
+            }
         }
     }
 }
 
+fn map_triage_mode(mode: TriageModeArg) -> TriageMode {
+    match mode {
+        TriageModeArg::Heuristic => TriageMode::Heuristic,
+        TriageModeArg::Llm => TriageMode::Llm,
+        TriageModeArg::Off => TriageMode::Off,
 fn emit_sandbox_reports(reports: &[Result<SandboxReport>]) {
     if reports.is_empty() {
         println!("No modules found to sandbox.");
