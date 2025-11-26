@@ -1,9 +1,19 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use goblin::pe::{options::ParseOptions, header};
+use goblin::pe::{header, options::ParseOptions};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, fs, path::{Path, PathBuf}};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+};
+
+pub mod sandbox;
+pub use sandbox::{
+    SandboxConfig, SandboxEvent, SandboxEventKind, SandboxReport, run_module_sandbox,
+    sandbox_firmware_modules,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FirmwareModule {
@@ -51,15 +61,19 @@ pub struct ModuleChange {
 
 #[derive(thiserror::Error, Debug)]
 pub enum FirmwareError {
-    #[error("firmware image '{path}' is empty")] 
+    #[error("firmware image '{path}' is empty")]
     EmptyImage { path: String },
 }
 
 pub fn scan_firmware(path: impl AsRef<Path>) -> Result<FirmwareScan> {
     let path = path.as_ref();
-    let data = fs::read(path).with_context(|| format!("Failed to read firmware image: {}", path.display()))?;
+    let data = fs::read(path)
+        .with_context(|| format!("Failed to read firmware image: {}", path.display()))?;
     if data.is_empty() {
-        return Err(FirmwareError::EmptyImage { path: path.display().to_string() }.into());
+        return Err(FirmwareError::EmptyImage {
+            path: path.display().to_string(),
+        }
+        .into());
     }
 
     let firmware_hash = hash_bytes(&data);
@@ -145,8 +159,10 @@ pub fn save_baseline(path: impl AsRef<Path>, baseline: &Baseline) -> Result<()> 
 }
 
 pub fn load_baseline(path: impl AsRef<Path>) -> Result<Baseline> {
-    let data = fs::read_to_string(&path).with_context(|| format!("failed to read baseline {}", path.as_ref().display()))?;
-    let baseline: Baseline = serde_json::from_str(&data).context("failed to parse baseline JSON")?;
+    let data = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read baseline {}", path.as_ref().display()))?;
+    let baseline: Baseline =
+        serde_json::from_str(&data).context("failed to parse baseline JSON")?;
     Ok(baseline)
 }
 
@@ -195,14 +211,22 @@ fn parse_pe_image(data: &[u8], offset: usize) -> Option<FirmwareModule> {
         return None;
     }
 
-    let parse_options = ParseOptions { reject_malformed: false, allow_trailing_bytes: true, ..Default::default() };
+    let parse_options = ParseOptions {
+        reject_malformed: false,
+        allow_trailing_bytes: true,
+        ..Default::default()
+    };
     let pe = goblin::pe::PE::parse_with_opts(&data[offset..], &parse_options).ok()?;
     let size_of_image = pe.header.optional_header.windows_fields.size_of_image as usize;
     let length = size_of_image.min(data.len().saturating_sub(offset));
 
     let module_bytes = &data[offset..offset + length];
     let hash = hash_bytes(module_bytes);
-    let entry_point_rva = pe.header.optional_header.standard_fields.address_of_entry_point as u64;
+    let entry_point_rva = pe
+        .header
+        .optional_header
+        .standard_fields
+        .address_of_entry_point as u64;
     let image_base = pe.header.optional_header.windows_fields.image_base;
     let entry_point = image_base + entry_point_rva;
 
@@ -210,7 +234,8 @@ fn parse_pe_image(data: &[u8], offset: usize) -> Option<FirmwareModule> {
         offset: offset as u64,
         length: length as u32,
         machine: header::machine_to_str(pe.header.coff_header.machine).to_string(),
-        subsystem: header::subsystem_to_str(pe.header.optional_header.windows_fields.subsystem).to_string(),
+        subsystem: header::subsystem_to_str(pe.header.optional_header.windows_fields.subsystem)
+            .to_string(),
         characteristics: format!("0x{:x}", pe.header.coff_header.characteristics),
         entry_point,
         image_base,
@@ -235,7 +260,10 @@ fn dedup_overlapping(modules: &mut Vec<FirmwareModule>) {
     *modules = deduped;
 }
 
-fn find_closest_match<'a>(module: &FirmwareModule, candidates: &'a [FirmwareModule]) -> Option<&'a FirmwareModule> {
+fn find_closest_match<'a>(
+    module: &FirmwareModule,
+    candidates: &'a [FirmwareModule],
+) -> Option<&'a FirmwareModule> {
     candidates
         .iter()
         .filter(|other| other.machine == module.machine && other.subsystem == module.subsystem)

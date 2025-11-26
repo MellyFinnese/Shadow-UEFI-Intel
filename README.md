@@ -60,6 +60,17 @@ cargo run -- compare /path/to/new.bin --baseline baselines/known-good.json
 
 The compare command prints a simple suspicion score alongside a breakdown of new, missing, and changed modules. Use the JSON output for pipeline integration.
 
+## Pre-Boot Sandbox
+
+Shadow-UEFI-Intel ships with a Unicorn-backed "pre-boot sandbox" that executes detected PE/COFF modules in a constrained x86_64 environment. The emulator mocks EFI_BOOT_SERVICES and SMRAM windows so obvious tampering attempts are surfaced even when hashes remain unchanged.
+
+```bash
+# Execute each detected module inside the sandbox with a 100k instruction budget
+cargo run -- sandbox /path/to/firmware.bin --instruction-limit 200000
+```
+
+For every module the sandbox reports suspicious memory writes such as SMRAM pokes or EFI boot service hooks, along with notes on how the execution halted (instruction budget or emulator fault). This is useful for catching stealthy rootkit behaviors before boot.
+
 ## Development
 
 - Requires Rust 1.77+ (edition 2024).

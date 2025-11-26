@@ -16,3 +16,4 @@ chrono = { version = "0.4", features = ["serde", "clock"] }
 goblin = { version = "0.9", features = ["pe64", "elf64"] }
 hex = "0.4"
 thiserror = "1"
+unicorn-engine = { version = "2", default-features = false, features = ["std", "x86"] }
