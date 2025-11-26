@@ -9,6 +9,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub mod sandbox;
+pub use sandbox::{
+    SandboxConfig, SandboxEvent, SandboxEventKind, SandboxReport, run_module_sandbox,
+    sandbox_firmware_modules,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FirmwareModule {
     pub offset: u64,
@@ -375,6 +381,9 @@ fn parse_pe_image(data: &[u8], offset: usize) -> Option<FirmwareModule> {
     let parse_options = ParseOptions {
         resolve_rva: false,
         parse_attribute_certificates: false,
+        reject_malformed: false,
+        allow_trailing_bytes: true,
+        ..Default::default()
     };
     let pe = goblin::pe::PE::parse_with_opts(&data[offset..], &parse_options).ok()?;
     let optional_header = pe.header.optional_header.as_ref()?;
@@ -389,6 +398,12 @@ fn parse_pe_image(data: &[u8], offset: usize) -> Option<FirmwareModule> {
         optional_header.standard_fields.address_of_entry_point as u64
     };
     let image_base = optional_header.windows_fields.image_base.max(0x400000);
+    let entry_point_rva = pe
+        .header
+        .optional_header
+        .standard_fields
+        .address_of_entry_point as u64;
+    let image_base = pe.header.optional_header.windows_fields.image_base;
     let entry_point = image_base + entry_point_rva;
 
     Some(FirmwareModule {
@@ -396,6 +411,9 @@ fn parse_pe_image(data: &[u8], offset: usize) -> Option<FirmwareModule> {
         length: length as u32,
         machine: format_machine(pe.header.coff_header.machine),
         subsystem: format_subsystem(optional_header.windows_fields.subsystem),
+        machine: header::machine_to_str(pe.header.coff_header.machine).to_string(),
+        subsystem: header::subsystem_to_str(pe.header.optional_header.windows_fields.subsystem)
+            .to_string(),
         characteristics: format!("0x{:x}", pe.header.coff_header.characteristics),
         entry_point,
         image_base,

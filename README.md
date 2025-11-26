@@ -73,12 +73,16 @@ cargo run -- compare /path/to/new.bin --baseline baselines/known-good.json --tri
 
 The compare command prints a simple suspicion score alongside a breakdown of new, missing, and changed modules. Use the JSON output for pipeline integration.
 
-## Example outputs
-- **Heuristic output:** `PCIe driver modified` → score **72/100** because the hash drifted, the vendor signature is missing, and the driver now requests DMA privileges.
-- **LLM output (Analyst notes):**
-  - **Top 5 suspicious changes:** highlights the modified PCIe driver, a new DXE volume, and altered Secure Boot keys.
-  - **Why they matter:** flags unsigned DMA-capable code paths and policy changes that weaken measured boot coverage.
-  - **What to verify next:** recommend re-baselining Secure Boot variables, validating the new DXE module provenance, and inspecting DMA guardrails.
+## Pre-Boot Sandbox
+
+Shadow-UEFI-Intel ships with a Unicorn-backed "pre-boot sandbox" that executes detected PE/COFF modules in a constrained x86_64 environment. The emulator mocks EFI_BOOT_SERVICES and SMRAM windows so obvious tampering attempts are surfaced even when hashes remain unchanged.
+
+```bash
+# Execute each detected module inside the sandbox with a 100k instruction budget
+cargo run -- sandbox /path/to/firmware.bin --instruction-limit 200000
+```
+
+For every module the sandbox reports suspicious memory writes such as SMRAM pokes or EFI boot service hooks, along with notes on how the execution halted (instruction budget or emulator fault). This is useful for catching stealthy rootkit behaviors before boot.
 
 ## Development
 

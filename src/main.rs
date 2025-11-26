@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -6,6 +6,9 @@ use serde::Serialize;
 use shadow_uefi_intel::{
     DiffReport, FirmwareScan, TriageMode, TriageOutcome, build_baseline, compare_against_baseline,
     load_baseline, run_triage, save_baseline, scan_firmware,
+    DiffReport, FirmwareScan, SandboxConfig, SandboxEventKind, SandboxReport, build_baseline,
+    compare_against_baseline, load_baseline, sandbox_firmware_modules, save_baseline,
+    scan_firmware,
 };
 
 #[derive(Parser)]
@@ -49,6 +52,14 @@ enum Commands {
         /// Select triage mode: heuristics, LLM-style notes, or disable
         #[arg(long, default_value = "heuristic")]
         triage_mode: TriageModeArg,
+    },
+    /// Execute detected PE modules in an emulator sandbox to catch behavioral anomalies
+    Sandbox {
+        /// Firmware image path
+        firmware: PathBuf,
+        /// Maximum number of instructions to execute per module
+        #[arg(long, default_value_t = 100000)]
+        instruction_limit: u64,
     },
 }
 
@@ -98,6 +109,19 @@ fn main() -> Result<()> {
             let report = compare_against_baseline(&baseline, &scan);
             let triage = run_triage(&report, map_triage_mode(triage_mode));
             emit_report(&report, &triage, format);
+        }
+        Commands::Sandbox {
+            firmware,
+            instruction_limit,
+        } => {
+            let bytes = fs::read(&firmware)?;
+            let scan = scan_firmware(&firmware)?;
+            let config = SandboxConfig {
+                instruction_limit,
+                ..Default::default()
+            };
+            let reports = sandbox_firmware_modules(&bytes, &scan.modules, &config);
+            emit_sandbox_reports(&reports);
         }
     }
 
@@ -234,5 +258,45 @@ fn map_triage_mode(mode: TriageModeArg) -> TriageMode {
         TriageModeArg::Heuristic => TriageMode::Heuristic,
         TriageModeArg::Llm => TriageMode::Llm,
         TriageModeArg::Off => TriageMode::Off,
+fn emit_sandbox_reports(reports: &[Result<SandboxReport>]) {
+    if reports.is_empty() {
+        println!("No modules found to sandbox.");
+        return;
+    }
+
+    for result in reports {
+        match result {
+            Ok(report) => {
+                println!(
+                    "\nModule @0x{offset:08x} hash={hash}",
+                    offset = report.module.offset,
+                    hash = &report.module.hash[..12]
+                );
+                println!("- executed instructions: {}", report.executed_instructions);
+                for note in &report.notes {
+                    println!("- note: {note}");
+                }
+
+                if report.events.is_empty() {
+                    println!("- no suspicious memory activity observed");
+                } else {
+                    for event in &report.events {
+                        let label = match event.kind {
+                            SandboxEventKind::SmramWrite => "SMRAM write",
+                            SandboxEventKind::BootServiceWrite => "BootServices write",
+                        };
+                        println!(
+                            "- {label} at 0x{addr:08x} (size {size} from 0x{pc:08x})",
+                            addr = event.address,
+                            size = event.size,
+                            pc = event.pc
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                println!("\nModule sandbox failed: {err}");
+            }
+        }
     }
 }
