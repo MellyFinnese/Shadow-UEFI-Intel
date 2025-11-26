@@ -1,10 +1,11 @@
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use shadow_uefi_intel::{
-    build_baseline, compare_against_baseline, load_baseline, save_baseline, scan_firmware, DiffReport,
-    FirmwareScan,
+    DiffReport, FirmwareScan, SandboxConfig, SandboxEventKind, SandboxReport, build_baseline,
+    compare_against_baseline, load_baseline, sandbox_firmware_modules, save_baseline,
+    scan_firmware,
 };
 
 #[derive(Parser)]
@@ -46,6 +47,14 @@ enum Commands {
         #[arg(short, long, default_value = "text")]
         format: OutputFormat,
     },
+    /// Execute detected PE modules in an emulator sandbox to catch behavioral anomalies
+    Sandbox {
+        /// Firmware image path
+        firmware: PathBuf,
+        /// Maximum number of instructions to execute per module
+        #[arg(long, default_value_t = 100000)]
+        instruction_limit: u64,
+    },
 }
 
 #[derive(Copy, Clone, ValueEnum, Debug)]
@@ -70,7 +79,11 @@ fn main() -> Result<()> {
             let scan = scan_firmware(&firmware)?;
             let baseline = build_baseline(&scan, label.as_deref());
             save_baseline(&output, &baseline)?;
-            println!("Baseline '{}' saved to {}", baseline.label, output.display());
+            println!(
+                "Baseline '{}' saved to {}",
+                baseline.label,
+                output.display()
+            );
         }
         Commands::Compare {
             firmware,
@@ -81,6 +94,19 @@ fn main() -> Result<()> {
             let baseline = load_baseline(&baseline)?;
             let report = compare_against_baseline(&baseline, &scan);
             emit_report(&report, format);
+        }
+        Commands::Sandbox {
+            firmware,
+            instruction_limit,
+        } => {
+            let bytes = fs::read(&firmware)?;
+            let scan = scan_firmware(&firmware)?;
+            let config = SandboxConfig {
+                instruction_limit,
+                ..Default::default()
+            };
+            let reports = sandbox_firmware_modules(&bytes, &scan.modules, &config);
+            emit_sandbox_reports(&reports);
         }
     }
 
@@ -124,7 +150,10 @@ fn emit_report(report: &DiffReport, format: OutputFormat) {
             println!("{}", json);
         }
         OutputFormat::Text => {
-            println!("Baseline : {} (created {})", report.baseline_label, report.baseline_created_at);
+            println!(
+                "Baseline : {} (created {})",
+                report.baseline_label, report.baseline_created_at
+            );
             println!("Firmware : {}", report.firmware_hash);
             println!("Suspicion score: {}", report.suspicious_score);
 
@@ -173,6 +202,49 @@ fn emit_report(report: &DiffReport, format: OutputFormat) {
                         subsystem = change.current.subsystem
                     );
                 }
+            }
+        }
+    }
+}
+
+fn emit_sandbox_reports(reports: &[Result<SandboxReport>]) {
+    if reports.is_empty() {
+        println!("No modules found to sandbox.");
+        return;
+    }
+
+    for result in reports {
+        match result {
+            Ok(report) => {
+                println!(
+                    "\nModule @0x{offset:08x} hash={hash}",
+                    offset = report.module.offset,
+                    hash = &report.module.hash[..12]
+                );
+                println!("- executed instructions: {}", report.executed_instructions);
+                for note in &report.notes {
+                    println!("- note: {note}");
+                }
+
+                if report.events.is_empty() {
+                    println!("- no suspicious memory activity observed");
+                } else {
+                    for event in &report.events {
+                        let label = match event.kind {
+                            SandboxEventKind::SmramWrite => "SMRAM write",
+                            SandboxEventKind::BootServiceWrite => "BootServices write",
+                        };
+                        println!(
+                            "- {label} at 0x{addr:08x} (size {size} from 0x{pc:08x})",
+                            addr = event.address,
+                            size = event.size,
+                            pc = event.pc
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                println!("\nModule sandbox failed: {err}");
             }
         }
     }
